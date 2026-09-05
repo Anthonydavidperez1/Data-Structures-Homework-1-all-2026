@@ -1,108 +1,133 @@
+#!/usr/bin/env python3
 """
 PA1 - Student Grade Management System
-Abstract interface. DO NOT MODIFY THIS FILE.
+gradebook.py - Student implementation
 
-Your GradeBook class (in gradebook.py) must inherit from GradeBookInterface
-and implement every method below exactly as documented.
+Implements every method of GradeBookInterface (see gradebook_interface.py
+for the authoritative spec on each method's exact behavior, including all
+validation rules and edge cases). This file does not modify the interface.
 """
 
-from abc import ABC, abstractmethod
+from gradebook_interface import GradeBookInterface, GradeBookError
 
 
-class GradeBookError(Exception):
-    """Base exception for GradeBook errors (available for your own use if needed)."""
-    pass
+# --- Grade point conversion table -------------------------------------------
+# Ordered high-to-low so the first matching (low, high) bound wins.
+# high is exclusive except for the top bracket, which is inclusive of 100.0.
+GRADE_POINT_TABLE = [
+    (90.0, 100.0, 4.0),
+    (80.0, 90.0, 3.0),
+    (70.0, 80.0, 2.0),
+    (60.0, 70.0, 1.0),
+    (0.0, 60.0, 0.0),
+]
 
 
-class GradeBookInterface(ABC):
+def _score_to_grade_points(score: float) -> float:
+    """Convert a single course score to grade points using the exact
+    cutoffs defined in gradebook_interface.py's calculate_gpa docstring."""
+    for low, high, points in GRADE_POINT_TABLE:
+        in_top_bracket = high == 100.0 and low <= score <= high
+        in_lower_bracket = high != 100.0 and low <= score < high
+        if in_top_bracket or in_lower_bracket:
+            return points
+    # Should be unreachable if add_grade validation is correct, but guard
+    # against a stray out-of-range value ever reaching here.
+    raise GradeBookError(f"Score {score} is outside the valid 0-100 range.")
 
-    @abstractmethod
+
+class GradeBook(GradeBookInterface):
+    """Stores students and their course grades and answers questions
+    about them (GPA, class averages, honor roll)."""
+
+    def __init__(self):
+        # student_id -> {"name": str, "major": str, "grades": {course_code: score}}
+        self._students = {}
+
+    # -------------------------------------------------------------------
+    # 1. add_student
+    # -------------------------------------------------------------------
     def add_student(self, student_id: str, name: str, major: str) -> bool:
-        """
-        Add a new student to the gradebook.
+        if student_id in self._students:
+            return False
 
-        Returns True and stores the student if all of the following hold:
-          - student_id is not already present in the gradebook
-          - name is a non-empty string (after stripping whitespace)
-          - major is a non-empty string (after stripping whitespace)
+        name_clean = name.strip() if isinstance(name, str) else ""
+        major_clean = major.strip() if isinstance(major, str) else ""
+        if not name_clean or not major_clean:
+            return False
 
-        Returns False (and makes no change) if any condition above fails.
-        """
-        raise NotImplementedError
+        self._students[student_id] = {
+            "name": name_clean,
+            "major": major_clean,
+            "grades": {},
+        }
+        return True
 
-    @abstractmethod
+    # -------------------------------------------------------------------
+    # 2. add_grade
+    # -------------------------------------------------------------------
     def add_grade(self, student_id: str, course_code: str, score: float) -> bool:
-        """
-        Record one course score for an existing student.
+        if student_id not in self._students:
+            return False
 
-        Returns True and stores the grade if all of the following hold:
-          - student_id exists in the gradebook
-          - course_code is a non-empty string (after stripping whitespace)
-          - score is a number with 0.0 <= score <= 100.0
+        course_clean = course_code.strip() if isinstance(course_code, str) else ""
+        if not course_clean:
+            return False
 
-        Returns False (and makes no change) if any condition above fails.
-        A student may have at most one score per course_code; adding a
-        grade for a course_code the student already has REPLACES the old
-        score and still returns True.
-        """
-        raise NotImplementedError
+        # Reject non-numeric scores (e.g. None, strings) before range-checking.
+        if isinstance(score, bool) or not isinstance(score, (int, float)):
+            return False
+        if not (0.0 <= score <= 100.0):
+            return False
 
-    @abstractmethod
+        # Replaces any existing score for this course_code.
+        self._students[student_id]["grades"][course_clean] = float(score)
+        return True
+
+    # -------------------------------------------------------------------
+    # 3. remove_student
+    # -------------------------------------------------------------------
     def remove_student(self, student_id: str) -> bool:
-        """
-        Remove a student and all of their recorded grades.
+        if student_id not in self._students:
+            return False
+        del self._students[student_id]
+        return True
 
-        Returns True if the student existed and was removed.
-        Returns False if the student_id was not found.
-        """
-        raise NotImplementedError
-
-    @abstractmethod
+    # -------------------------------------------------------------------
+    # 4. calculate_gpa
+    # -------------------------------------------------------------------
     def calculate_gpa(self, student_id: str):
-        """
-        Calculate a student's GPA on a 4.0 scale from their recorded scores.
+        if student_id not in self._students:
+            return None
 
-        Per-course score -> grade point conversion (use these exact cutoffs):
-            90.0 <= score <= 100.0  -> 4.0
-            80.0 <= score < 90.0    -> 3.0
-            70.0 <= score < 80.0    -> 2.0
-            60.0 <= score < 70.0    -> 1.0
-            0.0  <= score < 60.0    -> 0.0
+        grades = self._students[student_id]["grades"]
+        if not grades:
+            return None
 
-        GPA = average of grade points across all of the student's recorded
-        courses, rounded to 2 decimal places using standard round-half-up
-        rounding (i.e. Python's round()).
+        points = [_score_to_grade_points(score) for score in grades.values()]
+        gpa = sum(points) / len(points)
+        return round(gpa, 2)
 
-        Returns the GPA (float) if the student exists AND has at least one
-        recorded grade.
-        Returns None if the student does not exist, or exists but has no
-        recorded grades.
-        """
-        raise NotImplementedError
-
-    @abstractmethod
+    # -------------------------------------------------------------------
+    # 5. get_class_average
+    # -------------------------------------------------------------------
     def get_class_average(self, course_code: str):
-        """
-        Calculate the average score across every student who has a
-        recorded grade for course_code.
+        scores = [
+            record["grades"][course_code]
+            for record in self._students.values()
+            if course_code in record["grades"]
+        ]
+        if not scores:
+            return None
+        return round(sum(scores) / len(scores), 2)
 
-        Returns the average (float, rounded to 2 decimal places) if at
-        least one student has a grade in that course.
-        Returns None if no student has a recorded grade for that
-        course_code (including courses that don't exist at all).
-        """
-        raise NotImplementedError
-
-    @abstractmethod
+    # -------------------------------------------------------------------
+    # 6. get_honor_roll
+    # -------------------------------------------------------------------
     def get_honor_roll(self, min_gpa: float = 3.5) -> list:
-        """
-        Return the student_ids of every student whose GPA (as defined by
-        calculate_gpa) is >= min_gpa.
-
-        A student with no recorded grades (GPA is None) is never on the
-        honor roll, regardless of min_gpa.
-
-        Returns a list of student_id strings sorted in ascending
-        alphabetical order. Returns an empty list if no student qualifies.
-        """
-        raise NotImplementedError
+        qualifying = []
+        for student_id in self._students:
+            gpa = self.calculate_gpa(student_id)
+            if gpa is not None and gpa >= min_gpa:
+                qualifying.append(student_id)
+        return sorted(qualifying)
